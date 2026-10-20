@@ -1,0 +1,19 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Papers are copyrighted by their publishers: keep them local, never commit them
+data/*.pdf
+
+# Generated indexes and logs
+data/cache/
+data/index.faiss
+data/chunks.pkl
+setup_log.txt
+
+# Local backup of the original code
+_backup_original/

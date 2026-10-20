@@ -1,6 +1,11 @@
-pymupdf
-sentence-transformers
-faiss-cpu
-numpy
-tiktoken
-openai
+# PDF parsing
+pymupdf>=1.24
+# Embeddings + vector search
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+numpy>=1.26
+# LLM providers (install at least the one you use)
+google-genai>=1.0
+anthropic>=0.40
+# Tests (python -m pytest)
+pytest>=8.0
