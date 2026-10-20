@@ -43,6 +43,15 @@ Setup
 
 pip install -r requirements.txt
 
+Get the sample paper. It is not included in this repository because it is copyrighted by IEEE:
+  C. Hou et al., "Adaptive Gradient Methods for Differentially Private TinyML in 6G,"
+  IEEE Wireless Communications, 2025. DOI: 10.1109/MWC.2025.3640093
+  https://doi.org/10.1109/MWC.2025.3640093
+Download the PDF (e.g. through your university's IEEE Xplore access) and save it as data/sample_ieee.pdf.
+It is the default paper for main.py and the paper the evaluation set in eval/ was written for.
+Any other paper works with: python main.py --pdf path/to/paper.pdf
+PDFs in data/ are ignored by git, so your papers are never committed.
+
 Set the API key for the LLM you want to use (Windows PowerShell):
   $env:GEMINI_API_KEY = "your-key"       # for Gemini
   $env:ANTHROPIC_API_KEY = "your-key"    # for Claude
