@@ -1,0 +1,11 @@
+# Kept out of the image: local environments, papers and caches, and files only used for development
+.venv/
+venv/
+data/
+_backup_original/
+.git/
+.claude/
+**/__pycache__/
+tests/
+eval/
+space/

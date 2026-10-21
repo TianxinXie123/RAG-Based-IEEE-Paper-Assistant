@@ -94,13 +94,33 @@ server.py is a small Flask API around the same pipeline:
   GET  /api/health   backend status and the loaded paper
   POST /api/upload   multipart "file" field: save and index the PDF
   POST /api/ask      {"question", "task": null | "summary" | "suggest", "history"}, answered as NDJSON events
-It listens on 127.0.0.1 only, and only pages served from this computer or from
-https://tianxinxie123.github.io may call it (add more with the RAG_ALLOWED_ORIGINS env var).
+By default it listens on 127.0.0.1 only, and only pages served from this computer, from
+https://tianxinxie123.github.io or from the Hugging Face Space it runs in may call it (add more with the
+RAG_ALLOWED_ORIGINS env var). Each visitor (browser) has a paper of their own: the page sends a random id in
+the X-Visitor-Id header, and the 20 most recently used papers are kept in memory.
 
 GitHub Pages: docs/ is a static site, so it can be published with Settings -> Pages -> Deploy from a branch ->
 main, /docs. GitHub Pages cannot run Python, so the published page still needs server.py running on the
 visitor's computer: it looks for it at http://localhost:8000 (the address can be changed by clicking the
 connection status). Chrome and Edge ask once for permission to let the site reach this computer.
+
+Hugging Face Space
+
+The Dockerfile runs the web interface as a Hugging Face Docker Space (cpu-basic: 2 vCPU, 16 GB; Docker Spaces
+need a PRO account). It runs python server.py --public, which listens on all interfaces and limits each
+visitor to 5 uploads and 20 questions per hour, and all visitors together to 50 uploads and 200 questions per
+day (PUBLIC_LIMITS in server.py), so strangers cannot run up the API bill. Set a monthly spending limit in the
+Anthropic Console as well. The embedding and reranker models are downloaded into the image at build time.
+
+  hf auth login
+  hf repos create TianxinXie123/IEEE-Paper-Assistant --type space --space-sdk docker --flavor cpu-basic --public
+  (Space -> Settings -> Variables and secrets: add the secret ANTHROPIC_API_KEY)
+  hf upload TianxinXie123/IEEE-Paper-Assistant space/README.md README.md --repo-type space
+  python -c "from huggingface_hub import HfApi; HfApi().upload_folder(repo_id='TianxinXie123/IEEE-Paper-Assistant', repo_type='space', folder_path='.', allow_patterns=['Dockerfile', '.dockerignore', 'requirements.txt', 'server.py', 'main.py', 'src/*.py', 'docs/*'])"
+
+space/README.md becomes the Space's README (its YAML header configures the Space). The app files are uploaded
+from Python because on Windows hf upload expands --include "src/*.py" into file names and fails. Every
+upload rebuilds the Space; the app is at https://huggingface.co/spaces/TianxinXie123/IEEE-Paper-Assistant.
 
 Evaluation
 
