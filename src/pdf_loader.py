@@ -13,9 +13,10 @@ Body text and figures/tables are handled separately:
 """
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 try:
     import pymupdf as fitz  # PyMuPDF >= 1.24.3 (new import name)
@@ -23,6 +24,11 @@ except ImportError:
     import fitz  # older PyMuPDF
 
 from src.figures import Figure, parse_caption
+from src.chunker import HEADING_MARK
+from src.symbols import apply_symbol_map, reattach_accents
+
+# PyMuPDF span flag for superscript text (bit 0)
+SUPERSCRIPT_FLAG = 1
 
 # Margins (in points) that hold running headers and footers
 HEADER_MARGIN = 30
@@ -37,7 +43,17 @@ MAX_GRAPHIC_AREA = 0.9
 # A text block that lies this much inside a figure/table region belongs to it
 INSIDE_FRACTION = 0.6
 # The heading that starts the bibliography; only searched for in the second half of the paper
-REFERENCES_HEADING_RE = re.compile(r"(?:^|\n\n)\s*(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography)\b")
+REFERENCES_HEADING_RE = re.compile(r"(?:^|\n\n)\s*(?:## )?(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography)\b")
+
+# Section headings: set in a font at least this much larger than the body text...
+HEADING_SIZE_RATIO = 1.15
+# ...short, and (mostly) in capitals or numbered like "II. TITLE" / "B. TITLE"
+MAX_HEADING_CHARS = 120
+HEADING_UPPER_SHARE = 0.8
+NUMBERED_HEADING_RE = re.compile(r"^(?:[IVXLC]+|[A-Z])\.\s+\S")
+# Headings that always start a new section (never the second line of the previous heading)
+UNNUMBERED_HEADINGS = {"ABSTRACT", "INDEX TERMS", "REFERENCES", "BIBLIOGRAPHY", "ACKNOWLEDGMENT",
+                       "ACKNOWLEDGMENTS", "ACKNOWLEDGEMENT", "APPENDIX", "CONCLUSION", "CONCLUSIONS"}
 
 
 @dataclass
@@ -67,7 +83,7 @@ def split_references(text: str):
         return text, ""
     cut = matches[-1]
     body = text[:cut.start()].rstrip()
-    references = re.sub(r"^\s*(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography)\s*", "", text[cut.start():])
+    references = re.sub(r"^\s*(?:## )?(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography)\s*", "", text[cut.start():])
     return body, references.strip()
 
 
@@ -188,10 +204,98 @@ def _tables(page):
     return tables
 
 
-def _parse_page(page, page_number):
+def _format_span(span, symbol_map) -> str:
+    """Text of one span, with repaired special characters and superscripts marked as ^x or ^(...)."""
+    text = apply_symbol_map("".join(c["c"] for c in span["chars"]), span["font"], symbol_map)
+    if span["flags"] & SUPERSCRIPT_FLAG and text.strip():
+        core = text.strip()
+        text = f"^{core}" if len(core) == 1 else f"^({core})"
+    return text
+
+
+def body_font_size(doc) -> float:
+    """The font size used for most characters of the document (the body text size)."""
+    sizes = Counter()
+    for page in doc:
+        for block in page.get_text("dict")["blocks"]:
+            for line in block.get("lines", []):
+                for span in line["spans"]:
+                    sizes[round(span["size"], 1)] += len(span["text"].strip())
+    return sizes.most_common(1)[0][0] if sizes else 0.0
+
+
+def is_heading_line(spans, text: str, body_size: float, first_in_block: bool) -> bool:
+    """
+    A section heading: short, contains letters, and either set in a larger font than the body
+    and written in capitals or numbered ("II. TITLE"), or numbered and in capitals at the start
+    of a block (headings set in the body size, e.g. small caps).
+    """
+    text = text.strip()
+    if not text or len(text) > MAX_HEADING_CHARS or not any(c.isalpha() for c in text):
+        return False
+    letters = [c for c in text if c.isalpha()]
+    mostly_upper = sum(c.isupper() for c in letters) >= HEADING_UPPER_SHARE * len(letters)
+    numbered = bool(NUMBERED_HEADING_RE.match(text))
+    sizes = [s["size"] for s in spans if "".join(c["c"] for c in s["chars"]).strip()]
+    larger = bool(sizes) and min(sizes) >= HEADING_SIZE_RATIO * body_size
+    return (larger and (mostly_upper or numbered)) or (first_in_block and numbered and mostly_upper)
+
+
+def _continues_heading(text: str) -> bool:
+    """Can this heading line be the second line of the previous heading (not a new heading)?"""
+    return not NUMBERED_HEADING_RE.match(text) and text.strip().upper() not in UNNUMBERED_HEADINGS
+
+
+def _text_blocks(page, symbol_map, body_size):
+    """
+    Text blocks as (x0, y0, x1, y1, text) tuples, like page.get_text("blocks"), but built
+    character by character so that wrongly mapped special characters can be repaired, and
+    with section headings written as Markdown "## TITLE" paragraphs.
+    """
+    blocks = []
+    for block in page.get_text("rawdict")["blocks"]:
+        if block.get("type") != 0:  # 0 = text; 1 = image
+            continue
+        parts = []  # ("heading" | "body", text), consecutive lines of the same kind merged
+        for i, line in enumerate(block["lines"]):
+            text = reattach_accents("".join(_format_span(s, symbol_map) for s in line["spans"]))
+            if is_heading_line(line["spans"], text, body_size, first_in_block=(i == 0)):
+                if parts and parts[-1][0] == "heading" and _continues_heading(text):
+                    parts[-1] = ("heading", f"{parts[-1][1]} {text.strip()}")
+                else:
+                    parts.append(("heading", text.strip()))
+            elif parts and parts[-1][0] == "body":
+                parts[-1] = ("body", f"{parts[-1][1]}\n{text}")
+            else:
+                parts.append(("body", text))
+        text = "\n\n".join(HEADING_MARK + t if kind == "heading" else t for kind, t in parts)
+        blocks.append((*block["bbox"], text + "\n"))
+    return blocks
+
+
+def _append_block(full_text: str, cleaned: str) -> str:
+    """Smart joining: add a cleaned block to the text, as a new paragraph or a continuation."""
+    if not full_text:
+        return cleaned
+    last_paragraph = full_text.rsplit("\n\n", 1)[-1]
+    if cleaned.startswith(HEADING_MARK):
+        # A heading split over two blocks ("III. A FRAMEWORK FOR ..." + "SCALING METHODS")
+        title, sep, rest = cleaned.partition("\n\n")
+        title = title[len(HEADING_MARK):]
+        if last_paragraph.startswith(HEADING_MARK) and _continues_heading(title):
+            return f"{full_text} {title}{sep}{rest}"
+        return f"{full_text}\n\n{cleaned}"
+    if last_paragraph.startswith(HEADING_MARK) or full_text.endswith(('.', '!', '?', ':')):
+        # After a heading, or likely a paragraph end
+        return f"{full_text}\n\n{cleaned}"
+    # The sentence likely continues in the next block
+    return f"{full_text} {cleaned}"
+
+
+def _parse_page(page, page_number, symbol_map, body_size):
     """Split one page into body blocks (in reading order) and its figures/tables."""
     page_height = page.rect.height
-    blocks = [b for b in page.get_text("blocks")
+    blocks = [b for b in _text_blocks(page, symbol_map, body_size)
               if b[1] > HEADER_MARGIN and b[3] < page_height - FOOTER_MARGIN and b[4].strip()]
 
     captions = _find_captions(blocks)
@@ -240,11 +344,14 @@ def _parse_page(page, page_number):
     return sorted(body, key=get_block_order), figures
 
 
-def parse_pdf(pdf_path: str) -> ParsedPaper:
+def parse_pdf(pdf_path: str, symbol_map: Optional[Dict[str, str]] = None) -> ParsedPaper:
     """
     Parse a PDF into body text (column-sorted, header/footer filtered, smartly joined)
     and a list of its figures and tables.
+    `symbol_map` ({glyph key: correct character}, see src/symbols.py) repairs special
+    characters whose Unicode mapping in the PDF is wrong.
     """
+    symbol_map = symbol_map or {}
     pdf_path = Path(pdf_path)
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
@@ -254,23 +361,16 @@ def parse_pdf(pdf_path: str) -> ParsedPaper:
     full_text = ""
     figures = []
 
+    body_size = body_font_size(doc)
     for page_num in range(len(doc)):
-        body_blocks, page_figures = _parse_page(doc[page_num], page_num + 1)
+        body_blocks, page_figures = _parse_page(doc[page_num], page_num + 1, symbol_map, body_size)
         figures.extend(page_figures)
 
         # Smart joining logic for blocks within the current page
         for b in body_blocks:
             cleaned = clean_text(b[4])
-            if not cleaned:
-                continue
-            if not full_text:
-                full_text = cleaned
-            elif full_text.endswith(('.', '!', '?', ':')):
-                # Likely a paragraph end
-                full_text += "\n\n" + cleaned
-            else:
-                # The sentence likely continues in the next block
-                full_text += " " + cleaned
+            if cleaned:
+                full_text = _append_block(full_text, cleaned)
 
     doc.close()
     body, references = split_references(full_text)

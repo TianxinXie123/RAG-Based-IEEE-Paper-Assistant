@@ -31,6 +31,11 @@ def test_tokenize_drops_stopwords_and_keeps_hyphenated_terms_whole_and_split():
     assert tokenize("What is the core innovation of DP-PSASC*?") == ["core", "innovation", "dp-psasc*", "dp", "psasc"]
 
 
+def test_tokenize_indexes_greek_letters_by_name_too():
+    assert tokenize("δ = 10") == ["δ", "delta", "10"]
+    assert tokenize("∈") == []  # a math symbol, not a letter
+
+
 def test_bm25_ranks_rare_term_matches_first():
     bm25 = BM25(CHUNKS)
     results = bm25.search("tunable coefficient", k=3)

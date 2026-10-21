@@ -8,6 +8,15 @@ import faiss
 import numpy as np
 
 
+def file_hash(path, length=12):
+    """Short SHA-256 hex digest of a file's bytes."""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()[:length]
+
+
 def cache_paths_for(pdf_path, embedding_model_name, cache_dir="data/cache", parser_version=1):
     """
     Build cache file paths that are unique to (PDF content, embedding model, parser version).
@@ -19,9 +28,7 @@ def cache_paths_for(pdf_path, embedding_model_name, cache_dir="data/cache", pars
     """
     pdf_path = Path(pdf_path)
     h = hashlib.sha256()
-    with open(pdf_path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            h.update(block)
+    h.update(file_hash(pdf_path, length=64).encode("ascii"))
     h.update(embedding_model_name.encode("utf-8"))
     h.update(f"parser-v{parser_version}".encode("utf-8"))
     key = h.hexdigest()[:12]

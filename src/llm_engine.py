@@ -14,6 +14,7 @@ Three kinds of requests are supported:
   - rewrite_query():         turn a follow-up question into a standalone one before retrieval
   - get_document_response(): run a task (summary, suggestions) over the WHOLE paper
 """
+import base64
 import os
 
 PROVIDERS = {
@@ -62,6 +63,11 @@ REWRITE_INSTRUCTION = (
     "Use the conversation to resolve references such as 'it', 'that method' or 'and on CIFAR10?'. "
     "If the question is already standalone, return it unchanged. "
     "Reply with the rewritten question only, in English, on a single line."
+)
+
+SYMBOL_INSTRUCTION = (
+    "You read single characters from images of printed PDF text, exactly as printed. "
+    "Reply with the character only, with no explanation."
 )
 
 # Room for adaptive thinking plus the visible answer
@@ -118,6 +124,8 @@ def _gemini_generate(model, system, user_parts, history, on_text):
     if client is None:
         client = _clients[("gemini", api_key)] = genai.Client(api_key=api_key)
 
+    if any(isinstance(part, bytes) for part, _ in user_parts):
+        raise LLMError("Image input is only implemented for the 'claude' provider.")
     prompt = "\n\n".join(text for text, _ in user_parts)
     if history:
         prompt = f"--- CONVERSATION SO FAR ---\n{_history_text(history)}\n\n{prompt}"
@@ -149,9 +157,14 @@ def _claude_generate(model, system, user_parts, history, on_text):
 
     # A part marked cacheable (the full paper text) is stored in Claude's prompt cache,
     # so asking for a summary and then suggestions on the same paper only pays for it once.
+    # A part given as bytes is a PNG image.
     content = []
-    for text, cacheable in user_parts:
-        block = {"type": "text", "text": text}
+    for part, cacheable in user_parts:
+        if isinstance(part, bytes):
+            block = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                 "data": base64.standard_b64encode(part).decode("ascii")}}
+        else:
+            block = {"type": "text", "text": part}
         if cacheable:
             block["cache_control"] = {"type": "ephemeral"}
         content.append(block)
@@ -248,6 +261,21 @@ def get_llm_response(query, context_chunks, provider=DEFAULT_PROVIDER, model=Non
     """
     user_prompt = build_user_prompt(query, context_chunks)
     return _generate(provider, model, QA_INSTRUCTION, [(user_prompt, False)], history, on_text)
+
+
+def identify_symbol(png_bytes, extracted_char, line_text, model=None):
+    """
+    Ask Claude which character is printed inside the red box of a line image.
+    Used to repair characters that a PDF maps to the wrong Unicode text. Raises LLMError on failure.
+    """
+    question = (
+        f"This image is one line of a PDF. Its text layer reads: {line_text!r}\n"
+        f"The character inside the red box was extracted as {extracted_char!r}, which is probably wrong.\n"
+        "Which character is printed inside the red box? Reply with that one Unicode character only "
+        "(for example ε, ≤ or •). If it is an accent mark printed over the following letter, "
+        "reply with the accent alone (for example ¨). Report what is printed, even if it looks like a typo."
+    )
+    return _generate("claude", model, SYMBOL_INSTRUCTION, [(png_bytes, False), (question, False)])
 
 
 def get_document_response(task, full_text, provider=DEFAULT_PROVIDER, model=None, on_text=None):

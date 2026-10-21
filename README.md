@@ -9,9 +9,9 @@ Key Features
 
 Coordinate-Aware PDF Parsing: Reconstructs logical reading order from double-column IEEE layouts using coordinate-based heuristic sorting.
 
-Hybrid Search Engine: Combines semantic retrieval (FAISS + Sentence-Transformers all-MiniLM-L6-v2) with BM25 keyword search through Reciprocal Rank Fusion, with an optional cross-encoder reranker.
+Hybrid Search Engine: Combines semantic retrieval (FAISS + Sentence-Transformers all-MiniLM-L6-v2) with BM25 keyword search through Reciprocal Rank Fusion, followed by a cross-encoder reranker.
 
-Token-Aware Chunking: Sentence-aligned chunks that fit the embedding model's token limit, with whole-sentence overlap.
+Section-Aware Chunking: Section headings are detected from font size and numbering and used as hard chunk boundaries; chunks are sentence-aligned, fit the embedding model's token limit and overlap by whole sentences.
 
 Claude Integration: Uses the Anthropic Claude API to synthesize professional, context-aware answers in English (Google Gemini is supported as an optional alternative).
 
@@ -34,8 +34,9 @@ PDF Processing: PyMuPDF (fitz)
 How It Works
 
 Ingestion: The system parses the PDF and sorts text blocks by their (x, y) coordinates to handle multi-column formats.Embedding: Text is split into chunks and converted into 384-dimensional vectors.
+Special Characters: Publishers' math fonts often map glyphs to the wrong Unicode text (the sample paper's "ε = 8, δ = 10⁻⁵" extracts as "2 ¼ 8, d ¼ 10-5"). Characters drawn with math/symbol fonts are detected by font, deduplicated per glyph, rendered with a red box around them and identified once with Claude vision; the resulting map is cached in data/cache/symbols/ and applied to the whole paper. Superscripts are written as ^x / ^(...), and accents drawn before their letter are recomposed ("Hübler"). Without ANTHROPIC_API_KEY this step is skipped.
 Figures and Tables: Text inside figures and tables is kept out of the body text. Each caption (plus the table cells, as Markdown) becomes its own chunk, labeled like "[Table I, page 4]". When a retrieved paragraph mentions "Fig. 2" or "Table I", that figure/table is added to the context automatically.
-Chunking: Body text is split into sentence-aligned chunks that fit the embedding model's 256-token limit (counted with its own tokenizer), with whole-sentence overlap. The references section is kept out of the index.
+Chunking: Body text is split at section headings, then into sentence-aligned chunks that fit the embedding model's 256-token limit (counted with its own tokenizer), with whole-sentence overlap within a section. The references section is kept out of the index.
 Indexing: Vectors are stored in a FAISS index for efficient similarity searching.
 Querying: When a user asks a question, the system retrieves the most relevant chunks (hybrid search) and sends them to Claude to generate a final answer with [Source N] citations.
 
@@ -65,7 +66,7 @@ python main.py --model claude-opus-5-5            # a stronger (more expensive) 
 python main.py --provider gemini                  # answer with Gemini (gemini-2.5-flash)
 python main.py -k 5                               # retrieve 5 chunks instead of 3
 python main.py --retrieval dense                  # embeddings only (also: bm25, hybrid = default)
-python main.py --rerank                           # rerank candidates with a cross-encoder
+python main.py --no-rerank                        # skip the cross-encoder reranker (faster, less accurate)
 python list_models.py                             # list the models your API keys can use
 
 Commands inside the program:
@@ -89,19 +90,22 @@ python evaluate.py --show-misses                  # also print what was retrieve
 The question set lists, for each question, evidence phrases copied from the paper; a question is answered
 at rank r if the r-th retrieved chunk contains one of them. The script reports Recall@1/3/5, MRR, the
 effect of figure linking, and the score distribution of answerable vs unanswerable questions that was used
-to choose the relevance threshold. Results on the sample paper (30 answerable questions, 38 chunks):
+to choose the relevance threshold. Results on the sample paper (31 answerable questions, 42 chunks,
+section-aware chunking):
 
 configuration       R@1     R@3     R@5   R@3+fig   MRR@5   ms/query
-dense             56.7%   70.0%   80.0%    73.3%    0.651        6
-bm25              76.7%   93.3%   96.7%    93.3%    0.857        6
-hybrid            80.0%   93.3%   93.3%    93.3%    0.856        6
-dense + rerank    60.0%   93.3%   96.7%    93.3%    0.762      900
-hybrid + rerank   60.0%   93.3%   96.7%    93.3%    0.762      780
+dense             45.2%   67.7%   77.4%    71.0%    0.575        7
+bm25              87.1%   96.8%  100.0%    96.8%    0.917        7
+hybrid            67.7%   93.5%   96.8%    93.5%    0.804        6
+dense + rerank    74.2%  100.0%  100.0%   100.0%    0.860      570
+hybrid + rerank   74.2%  100.0%  100.0%   100.0%    0.860      640
 
-The app uses hybrid retrieval (dense + BM25 merged with Reciprocal Rank Fusion) by default. The cross-encoder
-reranker (cross-encoder/ms-marco-MiniLM-L-6-v2) did not improve Recall@3 here, lowered Recall@1 and added
-~0.8 s per question, so it is opt-in (--rerank). Caveat: the questions were written while reading the paper,
-so they share wording with it, which favors keyword search; 30 questions also means one question = 3.3%.
+History of the main changes (hybrid, Recall@3): token-aware chunking + hybrid search 70.0% (dense) -> 93.3%;
+section headings as chunk boundaries -> 93.5% (and Recall@5 90.3% -> 96.8%). With mixed-topic chunks the
+cross-encoder reranker (cross-encoder/ms-marco-MiniLM-L-6-v2) did not help; with one-topic chunks it reaches
+100% Recall@3, at ~0.6 s extra per question, so the app now uses hybrid + rerank by default. Adding the section path to every chunk ("contextual chunk
+header") did not help on this set, so it is off. Caveat: the questions were written while reading the paper,
+so they share wording with it, which favors keyword search; 31 questions also means one question = 3.2%.
 
 Tests
 

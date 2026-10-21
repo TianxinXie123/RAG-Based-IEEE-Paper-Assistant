@@ -12,6 +12,7 @@ where f(t, d) is the term frequency in chunk d, |d| its length and avgdl the ave
 """
 import math
 import re
+import unicodedata
 from collections import Counter
 from typing import List, Tuple
 
@@ -22,19 +23,35 @@ of on or so such than that the their them then there these they this to was were
 while who why will with would we our you your
 """.split())
 
-_TOKEN_RE = re.compile(r"[a-z0-9]+(?:[-*][a-z0-9*]+)*\*?")
+# Letters and digits of any script (so Greek symbols such as "δ" are kept), optionally joined by "-" or "*"
+_TOKEN_RE = re.compile(r"[^\W_]+(?:[-*][^\W_*]+\*?)*\*?")
+
+
+def greek_letter_name(char: str) -> str:
+    """'δ' -> 'delta', so that a query that spells out a symbol still matches it. '' if not Greek."""
+    try:
+        words = unicodedata.name(char).split()
+    except ValueError:
+        return ""
+    if words[0] != "GREEK":
+        return ""
+    words = [w for w in words if w not in ("GREEK", "SMALL", "CAPITAL", "LETTER", "SYMBOL", "LUNATE", "FINAL")]
+    return words[0].lower() if words else ""
 
 
 def tokenize(text: str) -> List[str]:
     """
     Lowercase word tokens without stopwords. A hyphenated term is kept whole AND split into
-    its parts, so "DP-PSASC*" matches both "DP-PSASC*" and "PSASC".
+    its parts, so "DP-PSASC*" matches both "DP-PSASC*" and "PSASC". A Greek letter is also
+    indexed by its name, so "δ" matches "delta".
     """
     tokens = []
     for term in _TOKEN_RE.findall(text.lower()):
         if term in STOPWORDS:
             continue
         tokens.append(term)
+        if len(term) == 1 and greek_letter_name(term):
+            tokens.append(greek_letter_name(term))
         parts = [p for p in re.split(r"[-*]", term) if p]
         if len(parts) > 1:
             tokens.extend(p for p in parts if p not in STOPWORDS)
