@@ -15,7 +15,7 @@ retrieval score should be high for answerable questions and low for unanswerable
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence
 
 from src.figures import attach_referenced_figures
 
@@ -57,13 +57,17 @@ def load_questions(path: str) -> List[Question]:
     return [Question(q["id"], q["question"], q.get("evidence", [])) for q in data["questions"]]
 
 
-def check_labels(questions: List[Question], chunks: List[str]) -> List[str]:
-    """Evidence phrases that appear in no chunk at all (a labelling mistake, not a retrieval miss)."""
+def check_labels(questions: List[Question], chunks: List[str], reference_texts: Sequence[str] = ()) -> List[str]:
+    """
+    Evidence phrases found neither in any chunk nor in the reference texts (e.g. the PDF's raw text):
+    a labelling mistake, not a retrieval miss. Evidence that is in the PDF but missing from every
+    chunk is fine here: it was lost by the parser, and evaluate() counts it as a miss.
+    """
     problems = []
     for q in questions:
         for e in q.evidence:
-            if not any(contains_evidence(c, [e]) for c in chunks):
-                problems.append(f"{q.id}: evidence not found in any chunk: {e!r}")
+            if not any(contains_evidence(t, [e]) for t in list(chunks) + list(reference_texts)):
+                problems.append(f"{q.id}: evidence not found in the paper: {e!r}")
     return problems
 
 

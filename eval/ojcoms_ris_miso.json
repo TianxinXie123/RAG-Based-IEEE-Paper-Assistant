@@ -1,0 +1,69 @@
+{
+  "pdf": "data/papers/ojcoms_ris_miso.pdf",
+  "title": "RIS-Assisted Multiuser MISO Transmission and the Impact of Imperfect Channel Estimation",
+  "venue": "IEEE Open Journal of the Communications Society, vol. 7, 2026 (open access), DOI 10.1109/OJCOMS.2026.3669559",
+  "description": "A question counts as answered at rank r if the r-th retrieved chunk contains ANY of its evidence phrases (case and whitespace insensitive). Evidence phrases are copied from the PDF's own text, not from the parser output, so text lost by the parser shows up as a miss. Questions with no evidence are not answered by the paper; they are used to choose the relevance threshold.",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "Which precoding technique is designed jointly with the RIS?",
+      "evidence": [
+        "Zero Forcing (ZF) precoding is a widely proposed technique"
+      ]
+    },
+    {
+      "id": "q02",
+      "question": "When can the multiuser channel matrix become rank deficient?",
+      "evidence": [
+        "if users exhibit significantly different channel gains"
+      ]
+    },
+    {
+      "id": "q03",
+      "question": "What makes millimeter-wave bands hard to use?",
+      "evidence": [
+        "substantial propagation losses and limited indoor penetration"
+      ]
+    },
+    {
+      "id": "q04",
+      "question": "Which modulation is used to measure the bit error rate?",
+      "evidence": [
+        "the BER for a 4-QAM transmission is used as a performance indicator"
+      ]
+    },
+    {
+      "id": "q05",
+      "question": "How strongly do the obstacles attenuate the signal in the simulation?",
+      "evidence": [
+        "obstruct the radio propagation with a 10 dB attenuation"
+      ]
+    },
+    {
+      "id": "q06",
+      "question": "How many antennas does the base station have?",
+      "evidence": [
+        "M = 4 antennas spaced by"
+      ]
+    },
+    {
+      "id": "q07",
+      "question": "What kind of algorithm optimizes the RIS reflection coefficients?",
+      "evidence": [
+        "a gradient algorithm for the optimization of RIS"
+      ]
+    },
+    {
+      "id": "q08",
+      "question": "Which other precoders are planned for future work?",
+      "evidence": [
+        "such as MMSE, hybrid, and multi-stage designs"
+      ]
+    },
+    {
+      "id": "u09",
+      "question": "How many users took part in the real-world measurement campaign?",
+      "evidence": []
+    }
+  ]
+}

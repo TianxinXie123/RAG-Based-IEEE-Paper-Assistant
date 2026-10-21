@@ -16,7 +16,7 @@ from src.symbols import resolve_symbol_map, symbol_cache_path
 from src.vector_store import cache_paths_for, file_hash, load_vector_db, save_vector_db
 
 # Bump this whenever PDF parsing or chunking changes, so cached indexes are rebuilt
-INDEX_VERSION = 5
+INDEX_VERSION = 6
 
 
 def _claude_recognizer():
@@ -33,11 +33,6 @@ def get_symbol_map(pdf_path, cache_dir, recognize=True):
     """
     cache_path = symbol_cache_path(pdf_path, cache_dir, file_hash(pdf_path))
     return resolve_symbol_map(pdf_path, cache_path, _claude_recognizer() if recognize else None)
-
-
-def parse_paper(pdf_path, cache_dir, recognize_symbols=True):
-    """Parse the PDF with its special characters repaired."""
-    return parse_pdf(pdf_path, get_symbol_map(pdf_path, cache_dir, recognize_symbols))
 
 
 def build_index(paper, pdf_path, embed_model, index_path, chunks_path):
@@ -67,17 +62,40 @@ def build_index(paper, pdf_path, embed_model, index_path, chunks_path):
     return index, chunks, figure_index
 
 
-def load_or_build_index(pdf_path, embed_model, cache_dir, rebuild=False, recognize_symbols=True):
-    """Return (index, chunks, figure_index) for the PDF, from the cache when possible."""
-    symbol_map = get_symbol_map(pdf_path, cache_dir, recognize_symbols)
-    # The repaired characters change the text, so they are part of the index cache key
+def _cache_files(pdf_path, cache_dir, symbol_map):
+    """Paths of the cached index, chunks and full text for this PDF (and its repaired characters)."""
+    # The repaired characters change the text, so they are part of the cache key
     symbols_digest = hashlib.sha256(json.dumps(symbol_map, sort_keys=True).encode("utf-8")).hexdigest()[:8]
     index_path, chunks_path = cache_paths_for(pdf_path, DEFAULT_EMBEDDING_MODEL, cache_dir,
                                               f"{INDEX_VERSION}-symbols-{symbols_digest}")
+    return index_path, chunks_path, os.path.join(os.path.dirname(index_path), "full_text.txt")
+
+
+def _save_full_text(paper, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(paper.full_text())
+
+
+def load_or_build_index(pdf_path, embed_model, cache_dir, rebuild=False, recognize_symbols=True):
+    """Return (index, chunks, figure_index) for the PDF, from the cache when possible."""
+    symbol_map = get_symbol_map(pdf_path, cache_dir, recognize_symbols)
+    index_path, chunks_path, text_path = _cache_files(pdf_path, cache_dir, symbol_map)
     if not rebuild:
         index, chunks, figure_index = load_vector_db(index_path, chunks_path)
         if index is not None:
             print(f"[INFO] Loaded cached index ({len(chunks)} chunks) for {os.path.basename(pdf_path)}")
             return index, chunks, figure_index
     paper = parse_pdf(pdf_path, symbol_map)
+    _save_full_text(paper, text_path)
     return build_index(paper, pdf_path, embed_model, index_path, chunks_path)
+
+
+def load_full_text(pdf_path, cache_dir):
+    """The whole paper as text (body, figures/tables, references), from the cache when possible."""
+    symbol_map = get_symbol_map(pdf_path, cache_dir)
+    _, _, text_path = _cache_files(pdf_path, cache_dir, symbol_map)
+    if not os.path.exists(text_path):
+        _save_full_text(parse_pdf(pdf_path, symbol_map), text_path)
+    with open(text_path, encoding="utf-8") as f:
+        return f.read()

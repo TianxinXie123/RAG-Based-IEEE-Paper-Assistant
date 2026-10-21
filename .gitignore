@@ -7,7 +7,7 @@ __pycache__/
 *.pyc
 
 # Papers are copyrighted by their publishers: keep them local, never commit them
-data/*.pdf
+data/**/*.pdf
 
 # Generated indexes and logs
 data/cache/

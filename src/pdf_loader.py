@@ -11,6 +11,7 @@ Body text and figures/tables are handled separately:
      The body text keeps its "see Fig. 2" mentions, which src/figures.py uses to
      link a paragraph back to the right figure/table.
 """
+import math
 import re
 import unicodedata
 from collections import Counter
@@ -29,6 +30,9 @@ from src.symbols import apply_symbol_map, reattach_accents
 
 # PyMuPDF span flag for superscript text (bit 0)
 SUPERSCRIPT_FLAG = 1
+# Text extraction flags: PyMuPDF's defaults for dict/rawdict, minus embedded image data (which made
+# pages with large images many times slower to read while only the text is used)
+TEXT_FLAGS = fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES
 
 # Margins (in points) that hold running headers and footers
 HEADER_MARGIN = 30
@@ -42,6 +46,19 @@ MIN_GRAPHIC_AREA = 0.02
 MAX_GRAPHIC_AREA = 0.9
 # A text block that lies this much inside a figure/table region belongs to it
 INSIDE_FRACTION = 0.6
+# A figure region may contain at most this many words of body-size text (axis labels, legends)
+MAX_BODY_WORDS_IN_FIGURE = 40
+# Text within this many points of the body font size counts as body-size text
+BODY_SIZE_TOLERANCE = 0.6
+# Running headers/footers live in the top and bottom share of the page; a line found there on at least
+# REPEATED_LINE_SHARE of the pages (digits ignored, so page numbers do not matter) is a running header/footer
+MARGIN_ZONE = 0.1
+REPEATED_LINE_SHARE = 0.3
+# Copyright notices, license statements and the download watermark of digital libraries
+BOILERPLATE_RE = re.compile(
+    r"Authorized licensed use limited to|All rights reserved|Personal use is permitted|requires IEEE permission"
+    r"|ieee\.org/publications/rights|Creative Commons Attribution|creativecommons\.org/licenses",
+    re.IGNORECASE)
 # The heading that starts the bibliography; only searched for in the second half of the paper
 REFERENCES_HEADING_RE = re.compile(r"(?:^|\n\n)\s*(?:## )?(?:REFERENCES|References|BIBLIOGRAPHY|Bibliography)\b")
 
@@ -70,6 +87,15 @@ class ParsedPaper:
         if self.references:
             parts.append("--- REFERENCES ---\n" + self.references)
         return "\n\n".join(parts)
+
+
+def raw_text(pdf_path: str) -> str:
+    """
+    All text of the PDF, page by page, with no filtering at all (margins, figures, captions included).
+    Used as the reference for evaluation labels, independent of what the parser keeps.
+    """
+    with fitz.open(pdf_path) as doc:
+        return "\n\n".join(clean_text(page.get_text()) for page in doc)
 
 
 def split_references(text: str):
@@ -161,15 +187,34 @@ def _find_captions(blocks):
     return captions
 
 
-def _graphic_regions(page, captions):
+def _body_words_inside(region, lines, body_size) -> int:
+    """Number of words of body-size text whose line lies inside the region."""
+    count = 0
+    for bbox, size, words in lines:
+        if abs(size - body_size) <= BODY_SIZE_TOLERANCE and _inside_fraction(bbox, region) >= INSIDE_FRACTION:
+            count += words
+    return count
+
+
+def _graphic_regions(page, captions, body_size):
     """
     Rectangles that hold figures: raster images, plus vector-drawing clusters that sit
     next to a figure caption (so ruled boxes around body text are not mistaken for figures).
+    A region that contains a paragraph's worth of body-size text is not a figure: magazine
+    layouts merge figure drawings with page decorations into clusters spanning whole columns.
     """
     page_area = _area(page.rect)
+    lines = []
+    for block in page.get_text("dict", flags=TEXT_FLAGS)["blocks"]:
+        for line in block.get("lines", []):
+            text = "".join(span["text"] for span in line["spans"])
+            if text.strip():
+                size = max(line["spans"], key=lambda span: len(span["text"].strip()))["size"]
+                lines.append((tuple(line["bbox"]), size, len(text.split())))
 
     def plausible(r):
-        return MIN_GRAPHIC_AREA * page_area <= _area(r) <= MAX_GRAPHIC_AREA * page_area
+        return (MIN_GRAPHIC_AREA * page_area <= _area(r) <= MAX_GRAPHIC_AREA * page_area
+                and _body_words_inside(r, lines, body_size) <= MAX_BODY_WORDS_IN_FIGURE)
 
     regions = [tuple(info["bbox"]) for info in page.get_image_info() if plausible(info["bbox"])]
 
@@ -217,7 +262,7 @@ def body_font_size(doc) -> float:
     """The font size used for most characters of the document (the body text size)."""
     sizes = Counter()
     for page in doc:
-        for block in page.get_text("dict")["blocks"]:
+        for block in page.get_text("dict", flags=TEXT_FLAGS)["blocks"]:
             for line in block.get("lines", []):
                 for span in line["spans"]:
                     sizes[round(span["size"], 1)] += len(span["text"].strip())
@@ -246,19 +291,52 @@ def _continues_heading(text: str) -> bool:
     return not NUMBERED_HEADING_RE.match(text) and text.strip().upper() not in UNNUMBERED_HEADINGS
 
 
-def _text_blocks(page, symbol_map, body_size):
+def _normalize_margin_line(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"\d+", "", text)).strip().lower()
+
+
+def repeated_margin_lines(doc):
+    """Normalized texts of lines that appear in the top/bottom zone of many pages (running headers/footers)."""
+    pages_with = Counter()
+    for page in doc:
+        height = page.rect.height
+        seen = set()
+        for block in page.get_text("dict", flags=TEXT_FLAGS)["blocks"]:
+            for line in block.get("lines", []):
+                y0, y1 = line["bbox"][1], line["bbox"][3]
+                if y1 <= MARGIN_ZONE * height or y0 >= (1 - MARGIN_ZONE) * height:
+                    norm = _normalize_margin_line("".join(span["text"] for span in line["spans"]))
+                    if norm:
+                        seen.add(norm)
+        pages_with.update(seen)
+    min_pages = max(2, math.ceil(REPEATED_LINE_SHARE * len(doc)))
+    return {norm for norm, n in pages_with.items() if n >= min_pages}
+
+
+def _is_margin_noise(bbox, text, page_height, repeated) -> bool:
+    """A running header/footer, a page number, a copyright notice or a download watermark."""
+    in_zone = bbox[3] <= MARGIN_ZONE * page_height or bbox[1] >= (1 - MARGIN_ZONE) * page_height
+    if not in_zone:
+        return False
+    norm = _normalize_margin_line(text)
+    return not norm.strip(" .,-|") or norm in repeated or bool(BOILERPLATE_RE.search(text))
+
+
+def _text_blocks(page, symbol_map, body_size, repeated=frozenset()):
     """
     Text blocks as (x0, y0, x1, y1, text) tuples, like page.get_text("blocks"), but built
     character by character so that wrongly mapped special characters can be repaired, and
     with section headings written as Markdown "## TITLE" paragraphs.
     """
     blocks = []
-    for block in page.get_text("rawdict")["blocks"]:
+    for block in page.get_text("rawdict", flags=TEXT_FLAGS)["blocks"]:
         if block.get("type") != 0:  # 0 = text; 1 = image
             continue
         parts = []  # ("heading" | "body", text), consecutive lines of the same kind merged
         for i, line in enumerate(block["lines"]):
             text = reattach_accents("".join(_format_span(s, symbol_map) for s in line["spans"]))
+            if _is_margin_noise(line["bbox"], text, page.rect.height, repeated):
+                continue
             if is_heading_line(line["spans"], text, body_size, first_in_block=(i == 0)):
                 if parts and parts[-1][0] == "heading" and _continues_heading(text):
                     parts[-1] = ("heading", f"{parts[-1][1]} {text.strip()}")
@@ -292,15 +370,16 @@ def _append_block(full_text: str, cleaned: str) -> str:
     return f"{full_text} {cleaned}"
 
 
-def _parse_page(page, page_number, symbol_map, body_size):
+def _parse_page(page, page_number, symbol_map, body_size, repeated=frozenset()):
     """Split one page into body blocks (in reading order) and its figures/tables."""
     page_height = page.rect.height
-    blocks = [b for b in _text_blocks(page, symbol_map, body_size)
+    blocks = [b for b in _text_blocks(page, symbol_map, body_size, repeated)
               if b[1] > HEADER_MARGIN and b[3] < page_height - FOOTER_MARGIN and b[4].strip()]
 
     captions = _find_captions(blocks)
-    tables = _tables(page)
-    graphics = _graphic_regions(page, captions)
+    # Table detection is the slowest step of parsing, so it only runs on pages with a table caption
+    tables = _tables(page) if any(c[0] == "table" for c in captions) else []
+    graphics = _graphic_regions(page, captions, body_size)
     # A table also shows up as a drawing cluster; keep only one region for it
     graphics = [g for g in graphics if not any(_inside_fraction(g, t[0]) > 0.8 for t in tables)]
 
@@ -362,8 +441,9 @@ def parse_pdf(pdf_path: str, symbol_map: Optional[Dict[str, str]] = None) -> Par
     figures = []
 
     body_size = body_font_size(doc)
+    repeated = repeated_margin_lines(doc)
     for page_num in range(len(doc)):
-        body_blocks, page_figures = _parse_page(doc[page_num], page_num + 1, symbol_map, body_size)
+        body_blocks, page_figures = _parse_page(doc[page_num], page_num + 1, symbol_map, body_size, repeated)
         figures.extend(page_figures)
 
         # Smart joining logic for blocks within the current page
@@ -378,13 +458,14 @@ def parse_pdf(pdf_path: str, symbol_map: Optional[Dict[str, str]] = None) -> Par
 
 
 if __name__ == "__main__":
-    # Local module test: python -m src.pdf_loader [path/to/paper.pdf]
+    # Local module test: python -m src.pdf_loader path/to/paper.pdf
     import os
     import sys
 
     sys.stdout.reconfigure(encoding="utf-8")
-    default_pdf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "sample_ieee.pdf")
-    paper = parse_pdf(sys.argv[1] if len(sys.argv) > 1 else default_pdf)
+    if len(sys.argv) < 2:
+        sys.exit("Usage: python -m src.pdf_loader path/to/paper.pdf")
+    paper = parse_pdf(sys.argv[1])
     print(f"Body text: {len(paper.text)} characters, {len(paper.figures)} figures/tables, "
           f"references: {len(paper.references)} characters\n")
     for f in paper.figures:

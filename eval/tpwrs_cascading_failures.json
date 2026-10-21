@@ -1,0 +1,69 @@
+{
+  "pdf": "data/papers/tpwrs_cascading_failures.pdf",
+  "title": "Analysis and Mitigation of Cascading Failures Using a Stochastic Interaction Graph With Eigen-Analysis",
+  "venue": "IEEE Transactions on Power Systems, vol. 40, no. 2, 2025, DOI 10.1109/TPWRS.2024.3421957",
+  "description": "A question counts as answered at rank r if the r-th retrieved chunk contains ANY of its evidence phrases (case and whitespace insensitive). Evidence phrases are copied from the PDF's own text, not from the parser output, so text lost by the parser shows up as a miss. Questions with no evidence are not answered by the paper; they are used to choose the relevance threshold.",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "On which test system is the method validated?",
+      "evidence": [
+        "NPCC (Northeast Power Coordinating Council) 140-bus system"
+      ]
+    },
+    {
+      "id": "q02",
+      "question": "Which kinds of failure propagation modes does the eigen-analysis reveal?",
+      "evidence": [
+        "which are persistent modes, trivial modes"
+      ]
+    },
+    {
+      "id": "q03",
+      "question": "Within what time are historical component failures grouped into one cascade?",
+      "evidence": [
+        "within one hour [41]"
+      ]
+    },
+    {
+      "id": "q04",
+      "question": "How does the graph distinguish cascades that end in different states?",
+      "evidence": [
+        "self-loops are defined to represent ending failures"
+      ]
+    },
+    {
+      "id": "q05",
+      "question": "Which cascades are left out of the analysis?",
+      "evidence": [
+        "this paper excludes the cascades stopped at generation 0"
+      ]
+    },
+    {
+      "id": "q06",
+      "question": "How are the simulated cascades started?",
+      "evidence": [
+        "randomly failing one of its 42 branches"
+      ]
+    },
+    {
+      "id": "q07",
+      "question": "By how much are line capacities upgraded in the mitigation strategies?",
+      "evidence": [
+        "Upgrade the transmission capacities by 20%"
+      ]
+    },
+    {
+      "id": "q08",
+      "question": "How much do the subgraph-based strategies reduce the number of large cascades?",
+      "evidence": [
+        "reduced by 89.9% and 95.8%"
+      ]
+    },
+    {
+      "id": "u09",
+      "question": "What was the economic cost of the 2003 Northeast blackout?",
+      "evidence": []
+    }
+  ]
+}

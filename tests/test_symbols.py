@@ -6,17 +6,19 @@ from src.pdf_loader import parse_pdf
 from src.symbols import (apply_symbol_map, clean_recognized_symbol, is_suspicious, load_symbol_cache,
                          reattach_accents, resolve_symbol_map)
 
-SAMPLE_PDF = os.path.join(os.path.dirname(__file__), "..", "data", "sample_ieee.pdf")
+SAMPLE_PDF = os.path.join(os.path.dirname(__file__), "..", "data", "papers", "sample_ieee.pdf")
 # What the printed glyphs of the sample paper really are
 SAMPLE_ANSWERS = {"\x01": "•", "2": "∈", "¼": "=", "d": "δ", "€": "¨"}
 
 
-def test_suspicious_means_symbol_font_or_never_real_text():
-    assert is_suspicious("AdvP4C4E74", "2")             # publisher math font
-    assert is_suspicious("ABCDEF+CMMI10", "x")          # TeX math italic, with subset prefix
+def test_suspicious_means_unreliable_font_or_never_real_text():
+    assert is_suspicious("AdvP4C4E74", "2")             # publisher symbol font
+    assert is_suspicious("ABCDEF+SymbolMT", "m")        # Symbol encoding: "m" is drawn as mu
+    assert not is_suspicious("ABCDEF+CMMI10", "x")      # TeX math italic: mapped correctly
     assert not is_suspicious("AdvOTed04a3c9", "2")      # normal text font
-    assert is_suspicious("AnyFont", "\x01")             # control character
+    assert is_suspicious("AnyFont", "")             # control character
     assert is_suspicious("AnyFont", "")           # private use area
+    assert not is_suspicious("CMEX10", "")          # extension font: large delimiters, just dropped
     assert not is_suspicious("AdvP4C4E74", " ")         # whitespace is never repaired
 
 
@@ -85,3 +87,23 @@ def test_sample_paper_text_is_repaired(sample_pdf, tmp_path):
     assert "(∈ = 8, δ = 10^(-5))" in paper.text
     assert "• Inner Momentum" in paper.text
     assert "Hübler" in paper.references
+
+
+def test_recognitions_are_capped_and_the_scan_is_cached(sample_pdf, tmp_path, monkeypatch):
+    from src import symbols
+    monkeypatch.setattr(symbols, "MAX_RECOGNITIONS_PER_PAPER", 2)
+    cache_path = str(tmp_path / "symbols.json")
+    calls = []
+
+    def recognizer(png, sample):
+        calls.append(sample.key)
+        return SAMPLE_ANSWERS[sample.char]
+
+    assert len(resolve_symbol_map(sample_pdf, cache_path, recognizer)) == 2
+    assert len(calls) == 2
+    # The most frequent glyph (the bullet, 9 times) is recognized first
+    assert "AdvP4C4E74|" in calls
+
+    # The next run reads the cached scan instead of scanning the PDF again
+    monkeypatch.setattr(symbols, "find_suspicious_glyphs", lambda path: (_ for _ in ()).throw(AssertionError))
+    assert len(resolve_symbol_map(sample_pdf, cache_path, recognizer)) == 2

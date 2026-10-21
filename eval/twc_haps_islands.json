@@ -1,0 +1,69 @@
+{
+  "pdf": "data/papers/twc_haps_islands.pdf",
+  "title": "HAPS-Enabled Downlink Coverage Enhancement in Islands and Maritime Areas",
+  "venue": "IEEE Transactions on Wireless Communications, vol. 25, 2026, DOI 10.1109/TWC.2026.3654761",
+  "description": "A question counts as answered at rank r if the r-th retrieved chunk contains ANY of its evidence phrases (case and whitespace insensitive). Evidence phrases are copied from the PDF's own text, not from the parser output, so text lost by the parser shows up as a miss. Questions with no evidence are not answered by the paper; they are used to choose the relevance threshold.",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "At what altitude do high altitude platform stations mainly operate?",
+      "evidence": [
+        "HAPSs mainly operate at an altitude of 20-50 km"
+      ]
+    },
+    {
+      "id": "q02",
+      "question": "How large an area can a single HAPS cover?",
+      "evidence": [
+        "a wider coverage range of up to 140 km"
+      ]
+    },
+    {
+      "id": "q03",
+      "question": "What payload does Softbank plan for its HAPSs?",
+      "evidence": [
+        "a payload of up to 70 kg"
+      ]
+    },
+    {
+      "id": "q04",
+      "question": "Which fading distributions model the links to onshore and offshore users?",
+      "evidence": [
+        "follow the shadowed Rician distributions and Rician distributions"
+      ]
+    },
+    {
+      "id": "q05",
+      "question": "How is the HAPS deployment area divided for a given user?",
+      "evidence": [
+        "divide the HAPS deployment area into a shadowed Rician region and a Rician region"
+      ]
+    },
+    {
+      "id": "q06",
+      "question": "Why do HAPSs have lower latency than LEO satellites?",
+      "evidence": [
+        "because of their proximity to the earth's surface"
+      ]
+    },
+    {
+      "id": "q07",
+      "question": "Which users need a higher HAPS density?",
+      "evidence": [
+        "onshore users require a higher HAPS density"
+      ]
+    },
+    {
+      "id": "q08",
+      "question": "Which of the two approximations for nearshore users is more accurate?",
+      "evidence": [
+        "Approximation 1 works better than Approximation 2"
+      ]
+    },
+    {
+      "id": "u09",
+      "question": "How much does it cost per month to operate one HAPS?",
+      "evidence": []
+    }
+  ]
+}

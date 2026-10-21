@@ -1,6 +1,8 @@
 {
-  "pdf": "data/sample_ieee.pdf",
-  "description": "Retrieval test set for sample_ieee.pdf. A question counts as answered at rank r if the r-th retrieved chunk contains ANY of its evidence phrases (case and whitespace insensitive). Questions with no evidence are not answered by the paper; they are used to choose the relevance threshold.",
+  "pdf": "data/papers/sample_ieee.pdf",
+  "title": "Adaptive Gradient Methods for Differentially Private TinyML in 6G",
+  "venue": "IEEE Wireless Communications, 2025 (magazine), DOI 10.1109/MWC.2025.3640093",
+  "description": "A question counts as answered at rank r if the r-th retrieved chunk contains ANY of its evidence phrases (case and whitespace insensitive). Questions with no evidence are not answered by the paper; they are used to choose the relevance threshold.",
   "questions": [
     {"id": "q01", "question": "What goes wrong when the DP-SGD clipping threshold is chosen badly?", "evidence": ["Set it too low, and you discard valuable information"]},
     {"id": "q02", "question": "Which privacy attacks are a threat to models trained on 6G data?", "evidence": ["membership inference attack"]},
