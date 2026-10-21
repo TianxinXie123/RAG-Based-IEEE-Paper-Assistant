@@ -102,7 +102,7 @@
           <svg class="icon" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
         </span>
         <span><strong>Drop a PDF here</strong> or <span class="link">browse your files</span></span>
-        <span class="muted">IEEE papers work best · up to 50 MB · the file stays on your computer</span>
+        <span class="muted" id="upload-note">IEEE papers work best · up to 50 MB · the file stays on your computer</span>
       </label>
 
       <div class="panel" data-show="indexing" aria-live="polite">
@@ -180,8 +180,8 @@
     <form method="dialog" id="settings-form">
       <h2>Backend connection</h2>
       <p>
-        This page sends your paper and questions to the Python backend (<code>server.py</code>) running on your
-        computer. Start it in the project folder with <code>python server.py</code>.
+        This page sends your paper and questions to the Python backend (<code>server.py</code>). To run it on
+        your computer, start it in the project folder with <code>python server.py</code>.
       </p>
       <div class="field">
         <label for="backend-input">Backend address</label>

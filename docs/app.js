@@ -6,6 +6,7 @@ const DEFAULT_BACKEND = "http://localhost:8000";
 const MAX_UPLOAD_MB = 50;     // same limit as server.py
 const MAX_HISTORY_TURNS = 3;  // same as main.py: earlier turns sent along for follow-up questions
 const RETRY_MS = 4000;        // how often to look for the backend while it is offline
+const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
 // What the user's message says when a whole-paper task is asked with a button or command
 const TASK_LABELS = {
@@ -36,6 +37,7 @@ const els = {
   upload: $("upload-section"),
   fileInput: $("file-input"),
   uploadError: $("upload-error"),
+  uploadNote: $("upload-note"),
   indexingName: $("indexing-name"),
   indexingElapsed: $("indexing-elapsed"),
   paperName: $("paper-name"),
@@ -75,6 +77,17 @@ const storage = {
   },
 };
 
+// A random id for this browser: the backend keeps one paper per visitor (server.py, X-Visitor-Id)
+function visitorId() {
+  let id = storage.get("visitor");
+  if (!id) {
+    id = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+    storage.set("visitor", id);
+  }
+  return id;
+}
+const VISITOR_HEADERS = { "X-Visitor-Id": visitorId() };
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -100,7 +113,7 @@ async function connect() {
   try {
     for (const base of backendCandidates()) {
       try {
-        const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) });
+        const res = await fetch(`${base}/api/health`, { headers: VISITOR_HEADERS, signal: AbortSignal.timeout(3000) });
         const info = await res.json();
         if (info.app === "ieee-paper-assistant") return onConnected(base, info);
       } catch {
@@ -116,6 +129,9 @@ async function connect() {
 function onConnected(base, info) {
   state.backend = base;
   setStatus("online", "Connected", `Backend: ${base}\nModel: ${info.model}`);
+  els.uploadNote.textContent = LOCAL_HOSTS.includes(new URL(base).hostname)
+    ? "IEEE papers work best · up to 50 MB · the file stays on your computer"
+    : "IEEE papers work best · up to 50 MB · kept on the demo server until it restarts";
   if (!state.indexing) {
     if (info.paper) {
       showPaper(info.paper);
@@ -189,7 +205,7 @@ async function uploadPaper(file) {
   try {
     const form = new FormData();
     form.append("file", file);
-    const res = await fetch(`${state.backend}/api/upload`, { method: "POST", body: form });
+    const res = await fetch(`${state.backend}/api/upload`, { method: "POST", headers: VISITOR_HEADERS, body: form });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `Upload failed (HTTP ${res.status}).`);
 
@@ -385,7 +401,7 @@ async function ask({ question = "", task = null, label = question }) {
   try {
     const res = await fetch(`${state.backend}/api/ask`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...VISITOR_HEADERS },
       body: JSON.stringify({ question, task, history: task ? [] : state.history }),
       signal: state.controller.signal,
     });

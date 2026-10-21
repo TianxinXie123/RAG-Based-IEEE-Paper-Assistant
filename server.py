@@ -5,6 +5,7 @@ plus the page in docs/ (which GitHub Pages can also host on its own).
 
     python server.py                         # then open http://localhost:8000
     python server.py --model claude-opus-5-5 --port 8080
+    python server.py --public --port 7860    # hosted demo (see Dockerfile): all interfaces, request limits
 
 API:
     GET  /api/health   backend status and the paper that is loaded
@@ -12,15 +13,19 @@ API:
     POST /api/ask      {"question": "...", "task": null | "summary" | "suggest", "history": [[q, a], ...]}
                        answered as a stream of JSON events, one per line (NDJSON):
                        status / sources / text / done, or notice / error
+Each visitor (browser) has a paper of their own: the page sends a random id in the X-Visitor-Id header.
 """
 import argparse
 import hashlib
 import json
 import os
 import queue
+import re
 import shutil
 import sys
 import threading
+import time
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -43,10 +48,20 @@ MAX_UPLOAD_MB = 50
 TASKS = {"summary": SUMMARY_TASK, "suggest": SUGGESTIONS_TASK}
 
 # Pages served from this computer may call the API, and so may these sites (the GitHub Pages copy of
-# docs/). More can be added with the RAG_ALLOWED_ORIGINS env var, comma-separated.
+# docs/) and the Hugging Face Space this runs in, if any. More can be added with the RAG_ALLOWED_ORIGINS
+# env var, comma-separated.
 ALLOWED_ORIGINS = {"https://tianxinxie123.github.io"} | {
     origin.strip() for origin in os.getenv("RAG_ALLOWED_ORIGINS", "").split(",") if origin.strip()}
 LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+# Papers kept in memory at once, one per visitor; the least recently used one is dropped first
+MAX_PAPERS = 20
+VISITOR_ID_RE = re.compile(r"[A-Za-z0-9-]{8,64}")
+
+# With --public (a server open to the internet): how many uploads/questions one visitor may send per hour,
+# and all visitors together per day. This caps what strangers can spend on the API key.
+PUBLIC_LIMITS = {"upload": (5, 50), "ask": (20, 200)}
+NOUNS = {"upload": "uploads", "ask": "questions"}
 
 app = Flask(__name__, static_folder=WEB_DIR, static_url_path="")
 app.config.update(MAX_CONTENT_LENGTH=MAX_UPLOAD_MB * 1024 * 1024,
@@ -64,15 +79,79 @@ class Paper:
     full_text: str | None = None  # extracted only when a whole-paper task is asked
 
 
-current_paper = None
+class RateLimiter:
+    """At most `limit` requests per `window` seconds for each key (a visitor, or "all" visitors together)."""
+
+    def __init__(self, limit, window):
+        self.limit = limit
+        self.window = window
+        self.times = defaultdict(deque)
+        self.lock = threading.Lock()
+
+    def allow(self, key):
+        """Count a request for `key`, unless the limit is reached (then return False)."""
+        now = time.monotonic()
+        with self.lock:
+            times = self.times[key]
+            while times and now - times[0] >= self.window:
+                times.popleft()
+            if len(times) >= self.limit:
+                return False
+            times.append(now)
+            return True
+
+
+# The paper each visitor is reading, least recently used first
+papers = OrderedDict()
+papers_lock = threading.Lock()
 # Only one paper is indexed at a time
 indexing_lock = threading.Lock()
+# "upload" / "ask" -> (per-visitor hourly, all-visitor daily) RateLimiter; empty: no limits (local use)
+limiters = {}
 
 
 def origin_allowed(origin):
     if origin is None:  # same-origin GET requests and non-browser clients send no Origin header
         return True
-    return urlparse(origin).hostname in LOCAL_HOSTS or origin in ALLOWED_ORIGINS
+    # Hugging Face sets SPACE_HOST ("user-name.hf.space") in a Space; its page calls the API from there
+    space_host = os.getenv("SPACE_HOST")
+    return (urlparse(origin).hostname in LOCAL_HOSTS or origin in ALLOWED_ORIGINS
+            or (space_host is not None and origin == f"https://{space_host}"))
+
+
+def visitor_id():
+    """The random id the page sends for this browser; clients without one (curl, tests) share a paper."""
+    value = request.headers.get("X-Visitor-Id", "")
+    return value if VISITOR_ID_RE.fullmatch(value) else "default"
+
+
+def get_paper(visitor):
+    with papers_lock:
+        paper = papers.get(visitor)
+        if paper is not None:
+            papers.move_to_end(visitor)
+        return paper
+
+
+def set_paper(visitor, paper):
+    with papers_lock:
+        papers[visitor] = paper
+        papers.move_to_end(visitor)
+        while len(papers) > MAX_PAPERS:
+            papers.popitem(last=False)
+
+
+def limit_error(action):
+    """Why this visitor may not upload/ask now, or None (and the request is counted)."""
+    if action not in limiters:
+        return None
+    hourly, daily = limiters[action]
+    if not hourly.allow(visitor_id()):
+        return f"This demo allows {hourly.limit} {NOUNS[action]} per hour. Try again later."
+    if not daily.allow("all"):
+        return (f"This demo has reached its daily limit of {NOUNS[action]}. Try again tomorrow, "
+                "or run the assistant on your own computer (see the GitHub repository).")
+    return None
 
 
 @app.before_request
@@ -87,7 +166,7 @@ def add_cors_headers(response):
     origin = request.headers.get("Origin")
     if origin and origin_allowed(origin):
         response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Visitor-Id"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
         response.headers["Vary"] = "Origin"
     return response
@@ -120,13 +199,13 @@ def index_page():
 @app.get("/api/health")
 def health():
     model = app.config["MODEL"] or PROVIDERS[app.config["PROVIDER"]]["default_model"]
+    paper = get_paper(visitor_id())
     return jsonify(app="ieee-paper-assistant", model=f"{app.config['PROVIDER']} / {model}",
-                   paper=paper_info(current_paper) if current_paper else None)
+                   paper=paper_info(paper) if paper else None)
 
 
 @app.post("/api/upload")
 def upload():
-    global current_paper
     file = request.files.get("file")
     if file is None or not file.filename:
         return jsonify(error="No file was uploaded."), 400
@@ -137,6 +216,8 @@ def upload():
         return jsonify(error="Another paper is being indexed. Wait for it to finish, then try again."), 409
 
     try:
+        if error := limit_error("upload"):
+            return jsonify(error=error), 429
         name = os.path.basename(file.filename)
         path = upload_path(name, data)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -150,10 +231,11 @@ def upload():
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
             return jsonify(error=f"Could not read {name}. It may be damaged, password-protected, "
                                  "or a scanned image without a text layer."), 422
-        current_paper = Paper(name, path, Retriever(embed_model, index, chunks), chunks, figure_index)
+        paper = Paper(name, path, Retriever(embed_model, index, chunks), chunks, figure_index)
+        set_paper(visitor_id(), paper)
     finally:
         indexing_lock.release()
-    return jsonify(paper=paper_info(current_paper))
+    return jsonify(paper=paper_info(paper))
 
 
 @app.post("/api/ask")
@@ -164,13 +246,15 @@ def ask():
     history = [(str(turn[0]), str(turn[1])) for turn in body.get("history") or []
                if isinstance(turn, list) and len(turn) == 2][-MAX_HISTORY_TURNS:]
 
-    paper = current_paper
+    paper = get_paper(visitor_id())
     if paper is None:
         return jsonify(error="Upload a paper first."), 409
     if task is not None and task not in TASKS:
         return jsonify(error=f"Unknown task '{task}'."), 400
     if task is None and not question:
         return jsonify(error="The question is empty."), 400
+    if error := limit_error("ask"):
+        return jsonify(error=error), 429
 
     events = answer_task(paper, task) if task else answer_question(paper, question, history)
     return Response(ndjson(events), mimetype="application/x-ndjson")
@@ -256,6 +340,9 @@ def parse_args():
                         help=f"LLM provider (default: {DEFAULT_PROVIDER}, or the RAG_PROVIDER env var)")
     parser.add_argument("--model", default=None, help="LLM model name (default depends on provider)")
     parser.add_argument("-k", "--top-k", type=int, default=3, help="Number of chunks to retrieve (default: 3)")
+    parser.add_argument("--public", action="store_true",
+                        help="Listen on all network interfaces and limit requests per visitor and per day "
+                             "(for a hosted demo; default: this computer only, no limits)")
     return parser.parse_args()
 
 
@@ -272,9 +359,15 @@ def main():
     get_embedding_model(DEFAULT_EMBEDDING_MODEL)
     get_reranker(DEFAULT_RERANKER_MODEL)
 
+    if args.public:
+        limiters.update({action: (RateLimiter(hourly, 3600), RateLimiter(daily, 24 * 3600))
+                         for action, (hourly, daily) in PUBLIC_LIMITS.items()})
+        print(f"[INFO] Public: limits per visitor per hour / per day {PUBLIC_LIMITS}, "
+              f"Space host {os.getenv('SPACE_HOST')}")
+
     print(f"\nOpen http://localhost:{args.port} in your browser (Ctrl+C to stop)\n")
-    # 127.0.0.1: reachable from this computer only
-    app.run(host="127.0.0.1", port=args.port, threaded=True)
+    # 127.0.0.1: reachable from this computer only; 0.0.0.0: from other machines too (a container's port)
+    app.run(host="0.0.0.0" if args.public else "127.0.0.1", port=args.port, threaded=True)
 
 
 if __name__ == "__main__":
