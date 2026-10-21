@@ -53,7 +53,9 @@ def test_threshold_report_counts_rejections():
 
 def test_check_labels_reports_evidence_that_exists_nowhere():
     questions = [Question("a", "q", ["fixed threshold"]), Question("b", "q", ["not in the paper"])]
-    assert check_labels(questions, CHUNKS) == ["b: evidence not found in any chunk: 'not in the paper'"]
+    assert check_labels(questions, CHUNKS) == ["b: evidence not found in the paper: 'not in the paper'"]
+    # Evidence the parser lost is still a valid label when it is in the PDF's own text
+    assert check_labels(questions, CHUNKS, ["... not in the paper ..."]) == []
 
 
 def test_load_questions(tmp_path):

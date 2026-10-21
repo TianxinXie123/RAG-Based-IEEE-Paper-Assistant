@@ -3,9 +3,9 @@
 Ask questions about an (IEEE-style) PDF paper.
 
 Examples:
-    python main.py                                   # uses data/sample_ieee.pdf with Claude
-    python main.py --pdf data/my_paper.pdf           # any other paper (index is built automatically)
-    python main.py --pdf data/my_paper.pdf --rebuild # force re-indexing
+    python main.py                                          # choose one of the papers in data/papers/
+    python main.py --pdf data/papers/my_paper.pdf           # a specific paper (index is built automatically)
+    python main.py --pdf data/papers/my_paper.pdf --rebuild # force re-indexing
     python main.py --model claude-opus-5-5           # a stronger (more expensive) Claude model
     python main.py --provider gemini                 # answer with Gemini instead of Claude
 
@@ -23,19 +23,19 @@ from src.embedder import DEFAULT_EMBEDDING_MODEL, get_embedding_model
 from src.figures import attach_referenced_figures
 from src.llm_engine import (DEFAULT_PROVIDER, PROVIDERS, SUGGESTIONS_TASK, SUMMARY_TASK, LLMError,
                             get_document_response, get_llm_response, rewrite_query)
-from src.pipeline import load_or_build_index, parse_paper
+from src.pipeline import load_full_text, load_or_build_index
 from src.retriever import RETRIEVAL_MODES, Retriever
 
 # Resolve paths relative to this file, so the program works from any working directory
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_PDF = os.path.join(PROJECT_DIR, "data", "sample_ieee.pdf")
+PAPERS_DIR = os.path.join(PROJECT_DIR, "data", "papers")
 CACHE_DIR = os.path.join(PROJECT_DIR, "data", "cache")
 
 # Number of earlier question/answer turns sent along with a new question
 MAX_HISTORY_TURNS = 3
 
 # Below this best-match cosine similarity the question is treated as off-topic and no LLM call is made.
-# Chosen with evaluate.py: on the sample set every answerable question scored >= 0.19, while off-topic
+# Chosen with evaluate.py: on the first test paper every answerable question scored >= 0.19, while off-topic
 # questions scored <= 0.18. On-topic questions the paper cannot answer score as high as answerable ones,
 # so those are left to the LLM, which is instructed to say it doesn't know.
 MIN_RELEVANCE_SCORE = 0.15
@@ -45,7 +45,7 @@ FORCE_PREFIX = "!"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="RAG question answering over a PDF paper.")
-    parser.add_argument("--pdf", default=DEFAULT_PDF, help="Path to the PDF (default: data/sample_ieee.pdf)")
+    parser.add_argument("--pdf", default=None, help="Path to the PDF (default: choose one from data/papers/)")
     parser.add_argument("--rebuild", action="store_true", help="Rebuild the index even if a cached one exists")
     parser.add_argument("--provider", choices=sorted(PROVIDERS), default=os.getenv("RAG_PROVIDER", DEFAULT_PROVIDER),
                         help=f"LLM provider (default: {DEFAULT_PROVIDER}, or the RAG_PROVIDER env var)")
@@ -54,7 +54,7 @@ def parse_args():
                              + ", ".join(f"{p}={c['default_model']}" for p, c in PROVIDERS.items()) + ")")
     parser.add_argument("-k", "--top-k", type=int, default=3, help="Number of chunks to retrieve (default: 3)")
     # Defaults chosen with evaluate.py (see README): hybrid retrieval + reranker. The reranker raises
-    # Recall@3 from 93.5% to 100% on the sample set for ~0.6 s per question; --no-rerank turns it off.
+    # Recall@3 from 93.5% to 100% on the first test paper for ~0.6 s per question; --no-rerank turns it off.
     parser.add_argument("--retrieval", choices=RETRIEVAL_MODES, default="hybrid",
                         help="Retrieval mode: dense (embeddings), bm25 (keywords) or hybrid (both, default)")
     parser.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
@@ -97,6 +97,26 @@ def stream_answer(generate):
     return answer
 
 
+def choose_paper(papers_dir):
+    """Let the user pick one of the PDFs in papers_dir; returns its path (exits if there is none)."""
+    papers = sorted(f for f in os.listdir(papers_dir) if f.lower().endswith(".pdf")) if os.path.isdir(papers_dir) else []
+    if not papers:
+        sys.exit(f"[ERROR] No PDF found in {papers_dir}. Put a paper there, or pass one with --pdf.")
+    if len(papers) == 1:
+        return os.path.join(papers_dir, papers[0])
+    print("Papers in data/papers/:")
+    for i, name in enumerate(papers, 1):
+        print(f"  {i:>2}. {name}")
+    while True:
+        try:
+            choice = input(f"Choose a paper (1-{len(papers)}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            sys.exit()
+        if choice.isdigit() and 1 <= int(choice) <= len(papers):
+            return os.path.join(papers_dir, papers[int(choice) - 1])
+        print("Please type one of the numbers above.")
+
+
 def main():
     # Answers can contain symbols such as Greek letters; never crash on a console that cannot show them
     if hasattr(sys.stdout, "reconfigure"):
@@ -104,7 +124,7 @@ def main():
 
     args = parse_args()
 
-    pdf_path = os.path.abspath(args.pdf)
+    pdf_path = os.path.abspath(args.pdf or choose_paper(PAPERS_DIR))
     if not os.path.exists(pdf_path):
         sys.exit(f"[ERROR] PDF not found: {pdf_path}")
 
@@ -150,7 +170,7 @@ def main():
         if command in DOCUMENT_COMMANDS:
             task, status = DOCUMENT_COMMANDS[command]
             if full_text is None:
-                full_text = parse_paper(pdf_path, CACHE_DIR).full_text()
+                full_text = load_full_text(pdf_path, CACHE_DIR)
             print(status)
             stream_answer(lambda on_text: get_document_response(
                 task, full_text, provider=args.provider, model=args.model, on_text=on_text))

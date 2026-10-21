@@ -21,7 +21,7 @@ import json
 import os
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Callable, Dict, Optional
 
 try:
@@ -29,11 +29,23 @@ try:
 except ImportError:
     import fitz  # older PyMuPDF
 
-# Font names of math/symbol fonts: TeX (CMMI, CMSY, CMEX, MSAM, MSBM), Adobe Symbol, MathType
-# (MTSY, MTMI, MT Extra), generic "...Math..." fonts, and the publisher fonts of IEEE magazines
-# ("AdvP..." are symbol fonts; "AdvOT..." are normal text fonts)
-SYMBOL_FONT_RE = re.compile(r"^(?:AdvP(?!OT)|CMMI|CMSY|CMEX|CMBSY|MSAM|MSBM|Symbol|MTSY|MTMI|MT-?Extra|.*Math)",
-                            re.IGNORECASE)
+# Text extraction flags: dict/rawdict defaults without embedded image data (only the text is needed)
+TEXT_FLAGS = fitz.TEXTFLAGS_DICT & ~fitz.TEXT_PRESERVE_IMAGES
+
+# Fonts whose characters are often mapped to the wrong Unicode text: Symbol-encoded fonts (Symbol,
+# SymbolMT, SymbolTigerExpert: "m" is drawn as "μ", "D" as "Δ") and the publisher symbol fonts of IEEE
+# magazines ("AdvP..." are symbol fonts; "AdvOT..." are normal text fonts). TeX and MathType math fonts
+# (CMMI, CMSY, MTSY, ...) are NOT listed: their glyphs have standard names that PyMuPDF maps correctly,
+# and flagging them sent hundreds of correct characters of a math-heavy paper to the vision model.
+SYMBOL_FONT_RE = re.compile(r"^(?:AdvP(?!OT)|Symbol)", re.IGNORECASE)
+
+# Math extension fonts (TeX CMEX, MathType MT Extra / ...EX..., BLEX) hold only large delimiters, braces and
+# integral signs; their control-character codes are dropped instead of being sent to the vision model
+EXTENSION_FONT_RE = re.compile(r"^(?:CMEX|EUEX|MT\w*EX|BLEX)", re.IGNORECASE)
+
+# At most this many distinct glyphs are sent to the vision model per paper, so that an unexpected font
+# can never trigger a long series of requests; the rest are kept as extracted
+MAX_RECOGNITIONS_PER_PAPER = 30
 # PDF subset fonts are named like "ABCDEF+CMMI10"
 _SUBSET_PREFIX_RE = re.compile(r"^[A-Z]{6}\+")
 
@@ -65,7 +77,7 @@ def is_symbol_font(font: str) -> bool:
 
 def is_suspicious(font: str, char: str) -> bool:
     """Is this extracted character likely to be wrong?"""
-    if not char or char.isspace():
+    if not char or char.isspace() or EXTENSION_FONT_RE.match(font_base_name(font)):
         return False
     category = unicodedata.category(char[0])
     if category in ("Cc", "Co") or char == "�":  # control, private use, replacement character
@@ -95,7 +107,7 @@ def find_suspicious_glyphs(pdf_path: str) -> Dict[str, GlyphSample]:
     samples: Dict[str, GlyphSample] = {}
     with fitz.open(pdf_path) as doc:
         for page_index, page in enumerate(doc):
-            for block in page.get_text("rawdict")["blocks"]:
+            for block in page.get_text("rawdict", flags=TEXT_FLAGS)["blocks"]:
                 for line in block.get("lines", []):
                     line_text = "".join(c["c"] for s in line["spans"] for c in s["chars"])
                     for span in line["spans"]:
@@ -163,48 +175,85 @@ def symbol_cache_path(pdf_path: str, cache_dir: str, pdf_hash: str) -> str:
     return os.path.join(cache_dir, "symbols", f"{stem}_{pdf_hash}.json")
 
 
-def load_symbol_cache(path: str) -> Dict[str, dict]:
+# Bump when the cache format or the detection rules change, so cached scans are redone
+SYMBOL_CACHE_VERSION = 2
+
+
+def _read_cache(path: str) -> dict:
     if not os.path.exists(path):
         return {}
     with open(path, encoding="utf-8") as f:
-        return json.load(f).get("glyphs", {})
+        return json.load(f)
 
 
-def save_symbol_cache(path: str, glyphs: Dict[str, dict]):
+def load_symbol_cache(path: str) -> Dict[str, dict]:
+    """The recognized glyphs stored in a symbol cache file ({} if there is none)."""
+    return _read_cache(path).get("glyphs", {})
+
+
+def save_symbol_cache(path: str, glyphs: Dict[str, dict], pending: Dict[str, GlyphSample], skipped: Dict[str, str]):
+    """
+    Store recognized glyphs, glyphs still waiting for recognition (with everything needed to render
+    them, so the PDF does not have to be scanned again) and glyphs that will not be retried.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {"version": SYMBOL_CACHE_VERSION, "glyphs": glyphs,
+            "pending": {k: asdict(s) for k, s in pending.items()}, "skipped": skipped}
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"glyphs": glyphs}, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def resolve_symbol_map(pdf_path: str, cache_path: str,
                        recognize: Optional[Callable[[bytes, GlyphSample], str]]) -> Dict[str, str]:
     """
-    Return {glyph_key: correct character} for the PDF. Glyphs already in the cache are reused;
-    the others are recognized with `recognize(png_bytes, sample) -> reply text` (skipped if None).
-    A failed recognition is not cached, so it is retried next time.
-    """
-    cached = load_symbol_cache(cache_path)
-    samples = find_suspicious_glyphs(pdf_path)
-    missing = [s for key, s in samples.items() if key not in cached]
+    Return {glyph_key: correct character} for the PDF.
 
-    if missing and recognize is not None:
-        print(f"[INFO] Recognizing {len(missing)} special character(s) with the vision model ...")
-        for sample in missing:
+    The PDF is scanned for suspicious glyphs once; the result is cached, so later runs start fast.
+    Glyphs not recognized yet are sent to `recognize(png_bytes, sample) -> reply text` (skipped if None),
+    most frequent first and at most MAX_RECOGNITIONS_PER_PAPER per paper. A recognition that fails
+    because of an error (no network, no key) is retried next time; an unclear answer is not.
+    """
+    data = _read_cache(cache_path)
+    glyphs = data.get("glyphs", {})
+    skipped = data.get("skipped", {})
+    changed = False
+    if data.get("version") == SYMBOL_CACHE_VERSION:
+        pending = {k: GlyphSample(**v) for k, v in data.get("pending", {}).items()}
+    else:
+        samples = find_suspicious_glyphs(pdf_path)
+        pending = {k: s for k, s in samples.items() if k not in glyphs and k not in skipped}
+        changed = True
+
+    if pending and recognize is not None:
+        ordered = sorted(pending.values(), key=lambda s: s.count, reverse=True)
+        for sample in ordered[MAX_RECOGNITIONS_PER_PAPER:]:
+            skipped[sample.key] = "over the per-paper recognition limit"
+            del pending[sample.key]
+        if len(ordered) > MAX_RECOGNITIONS_PER_PAPER:
+            print(f"[WARN] {len(ordered)} special characters found; only the {MAX_RECOGNITIONS_PER_PAPER} "
+                  f"most frequent are recognized, the rest are kept as extracted.")
+        todo = ordered[:MAX_RECOGNITIONS_PER_PAPER]
+        print(f"[INFO] Recognizing {len(todo)} special character(s) with the vision model ...")
+        for n, sample in enumerate(todo, 1):
             try:
                 reply = recognize(render_glyph_in_context(pdf_path, sample), sample)
             except Exception as e:
                 print(f"[WARN] Could not recognize special characters ({type(e).__name__}: {e}); "
-                      f"they are kept as extracted.")
+                      f"they are kept as extracted for now.")
                 break
+            changed = True
+            del pending[sample.key]
             symbol = clean_recognized_symbol(reply)
             if symbol is None:
-                print(f"[WARN] Unclear answer for {sample.key!r} on page {sample.page + 1}: {reply[:40]!r}")
+                skipped[sample.key] = f"unclear answer: {reply[:40]!r}"
+                print(f"[WARN]   ({n}/{len(todo)}) unclear answer for {sample.char!r} on page {sample.page + 1}")
                 continue
-            cached[sample.key] = {"char": symbol, "extracted": sample.char, "page": sample.page + 1,
+            glyphs[sample.key] = {"char": symbol, "extracted": sample.char, "page": sample.page + 1,
                                   "count": sample.count, "line": sample.line_text}
-            print(f"[INFO]   page {sample.page + 1}: {sample.char!r} -> {symbol!r}   ({sample.line_text[:60]})")
-        save_symbol_cache(cache_path, cached)
-    elif missing:
-        print(f"[INFO] {len(missing)} special character(s) could not be checked (no vision model available).")
+            print(f"[INFO]   ({n}/{len(todo)}) page {sample.page + 1}: {sample.char!r} -> {symbol!r}")
+    elif pending:
+        print(f"[INFO] {len(pending)} special character(s) could not be checked (no vision model available).")
 
-    return {key: entry["char"] for key, entry in cached.items()}
+    if changed:
+        save_symbol_cache(cache_path, glyphs, pending, skipped)
+    return {key: entry["char"] for key, entry in glyphs.items()}

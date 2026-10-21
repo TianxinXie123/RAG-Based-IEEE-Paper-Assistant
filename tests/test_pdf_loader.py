@@ -2,15 +2,26 @@ import os
 
 import pytest
 
-from src.pdf_loader import clean_text, parse_pdf, split_references
+from src.pdf_loader import _is_margin_noise, clean_text, parse_pdf, split_references
 
-SAMPLE_PDF = os.path.join(os.path.dirname(__file__), "..", "data", "sample_ieee.pdf")
+SAMPLE_PDF = os.path.join(os.path.dirname(__file__), "..", "data", "papers", "sample_ieee.pdf")
 
 
 def test_clean_text_joins_lines_and_fixes_hyphenation():
     assert clean_text("fine-\ntuning the\nmodel") == "finetuning the model"
     assert clean_text("DP-\nSGD works") == "DP-SGD works"
     assert clean_text("ﬁne") == "fine"  # ligature
+
+
+def test_margin_noise_is_headers_page_numbers_and_boilerplate():
+    height, repeated = 800, {"ieee transactions on wireless communications, vol. ,"}
+    top, bottom, middle = (40, 30, 300, 38), (40, 770, 300, 778), (40, 400, 300, 410)
+    assert _is_margin_noise(top, "IEEE TRANSACTIONS ON WIRELESS COMMUNICATIONS, VOL. 25, 2026", height, repeated)
+    assert _is_margin_noise(bottom, "11177", height, repeated)
+    assert _is_margin_noise(bottom, "Authorized licensed use limited to: Some University.", height, set())
+    # The same text in the middle of the page is body text
+    assert not _is_margin_noise(middle, "11177", height, repeated)
+    assert not _is_margin_noise(top, "A normal first line of a column", height, repeated)
 
 
 def test_split_references_uses_the_heading_in_the_second_half():

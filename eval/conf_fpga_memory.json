@@ -1,0 +1,69 @@
+{
+  "pdf": "data/papers/conf_fpga_memory.pdf",
+  "title": "Heuristic-Driven Resource Optimization for Decoupled Memory Channels on FPGAs",
+  "venue": "2026 IEEE IATMSI conference, DOI 10.1109/IATMSI68868.2026.11465435",
+  "description": "A question counts as answered at rank r if the r-th retrieved chunk contains ANY of its evidence phrases (case and whitespace insensitive). Evidence phrases are copied from the PDF's own text, not from the parser output, so text lost by the parser shows up as a miss. Questions with no evidence are not answered by the paper; they are used to choose the relevance threshold.",
+  "questions": [
+    {
+      "id": "q01",
+      "question": "What channel depth do designers usually pick by default?",
+      "evidence": [
+        "one-size-fits-all channel depth (typically 64)"
+      ]
+    },
+    {
+      "id": "q02",
+      "question": "Above which baseline stall rate is a kernel treated as saturated?",
+      "evidence": [
+        "we empirically determined the Threshold = 40%"
+      ]
+    },
+    {
+      "id": "q03",
+      "question": "On which FPGA board were the experiments run?",
+      "evidence": [
+        "All experiments were conducted on an Intel Arria 10 GX FPGA"
+      ]
+    },
+    {
+      "id": "q04",
+      "question": "How much of its time does the HotSpot kernel stall on memory before decoupling?",
+      "evidence": [
+        "high baseline stalls (76.8%)"
+      ]
+    },
+    {
+      "id": "q05",
+      "question": "How much speedup does HotSpot lose with the standard channel depth?",
+      "evidence": [
+        "resulting in a 60.3% performance degradation"
+      ]
+    },
+    {
+      "id": "q06",
+      "question": "Why does the resource footprint not grow when the channel depth increases?",
+      "evidence": [
+        "allocates a minimum of one such block to handle the interface"
+      ]
+    },
+    {
+      "id": "q07",
+      "question": "How much more resource-efficient is the optimized HotSpot configuration?",
+      "evidence": [
+        "2.52× more efficient than the standard implementation"
+      ]
+    },
+    {
+      "id": "q08",
+      "question": "What is the job of the Access unit in a decoupled access-execute design?",
+      "evidence": [
+        "dedicated solely to calculating memory addresses"
+      ]
+    },
+    {
+      "id": "u09",
+      "question": "How much power does the FPGA draw while running the benchmarks?",
+      "evidence": []
+    }
+  ]
+}
