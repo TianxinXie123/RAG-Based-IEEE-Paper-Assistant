@@ -7,5 +7,7 @@ numpy>=1.26
 # LLM providers (install at least the one you use)
 google-genai>=1.0
 anthropic>=0.40
+# Web interface (python server.py)
+flask>=3.0
 # Tests (python -m pytest)
 pytest>=8.0

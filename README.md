@@ -79,6 +79,29 @@ Answers stream in as they are generated. Follow-up questions ("And on Imagenette
 Questions that look unrelated to the paper (best retrieval score below 0.15) are not sent to the LLM;
 start a question with '!' to ask anyway.
 
+Web Interface
+
+python server.py                                  # then open http://localhost:8000 (or double-click web.bat)
+python server.py --model claude-opus-5-5 --port 8080
+
+The page (docs/index.html, style.css, app.js) introduces the assistant, takes a PDF by drag and drop or file
+picker, and has a chat box with the same features as the command line: streamed answers, follow-up questions,
+Summarize / Review buttons (/summary, /suggest), /reset and /help. Each answer lists the passages it was
+built from; clicking a [Source N] citation opens that passage. Uploaded papers are saved in data/uploads/
+(ignored by git) and indexed with the same cache as main.py.
+
+server.py is a small Flask API around the same pipeline:
+  GET  /api/health   backend status and the loaded paper
+  POST /api/upload   multipart "file" field: save and index the PDF
+  POST /api/ask      {"question", "task": null | "summary" | "suggest", "history"}, answered as NDJSON events
+It listens on 127.0.0.1 only, and only pages served from this computer or from
+https://tianxinxie123.github.io may call it (add more with the RAG_ALLOWED_ORIGINS env var).
+
+GitHub Pages: docs/ is a static site, so it can be published with Settings -> Pages -> Deploy from a branch ->
+main, /docs. GitHub Pages cannot run Python, so the published page still needs server.py running on the
+visitor's computer: it looks for it at http://localhost:8000 (the address can be changed by clicking the
+connection status). Chrome and Edge ask once for permission to let the site reach this computer.
+
 Evaluation
 
 python evaluate.py                                # retrieval quality on every question set in eval/ (no API calls)
