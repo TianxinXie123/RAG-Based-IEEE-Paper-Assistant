@@ -23,8 +23,7 @@ from src.embedder import DEFAULT_EMBEDDING_MODEL, get_embedding_model
 from src.figures import attach_referenced_figures
 from src.llm_engine import (DEFAULT_PROVIDER, PROVIDERS, SUGGESTIONS_TASK, SUMMARY_TASK, LLMError,
                             get_document_response, get_llm_response, rewrite_query)
-from src.pdf_loader import parse_pdf
-from src.pipeline import load_or_build_index
+from src.pipeline import load_or_build_index, parse_paper
 from src.retriever import RETRIEVAL_MODES, Retriever
 
 # Resolve paths relative to this file, so the program works from any working directory
@@ -54,11 +53,12 @@ def parse_args():
                         help="LLM model name (default depends on provider: "
                              + ", ".join(f"{p}={c['default_model']}" for p, c in PROVIDERS.items()) + ")")
     parser.add_argument("-k", "--top-k", type=int, default=3, help="Number of chunks to retrieve (default: 3)")
-    # Defaults chosen with evaluate.py: hybrid had the best Recall@1/MRR; the reranker did not improve
-    # Recall@3 on the sample set and added ~0.8 s per question, so it is opt-in.
+    # Defaults chosen with evaluate.py (see README): hybrid retrieval + reranker. The reranker raises
+    # Recall@3 from 93.5% to 100% on the sample set for ~0.6 s per question; --no-rerank turns it off.
     parser.add_argument("--retrieval", choices=RETRIEVAL_MODES, default="hybrid",
                         help="Retrieval mode: dense (embeddings), bm25 (keywords) or hybrid (both, default)")
-    parser.add_argument("--rerank", action="store_true", help="Rerank the candidates with a cross-encoder")
+    parser.add_argument("--rerank", action=argparse.BooleanOptionalAction, default=True,
+                        help="Rerank the candidates with a cross-encoder (default: on; --no-rerank is faster)")
     return parser.parse_args()
 
 
@@ -150,7 +150,7 @@ def main():
         if command in DOCUMENT_COMMANDS:
             task, status = DOCUMENT_COMMANDS[command]
             if full_text is None:
-                full_text = parse_pdf(pdf_path).full_text()
+                full_text = parse_paper(pdf_path, CACHE_DIR).full_text()
             print(status)
             stream_answer(lambda on_text: get_document_response(
                 task, full_text, provider=args.provider, model=args.model, on_text=on_text))

@@ -47,8 +47,18 @@ def test_sample_paper_body_has_no_table_cells_or_captions(paper):
     assert "Fig. 2 reveals why" in paper.text  # body text that mentions a figure stays
 
 
+def test_sample_paper_headings_are_detected_and_merged_across_lines(paper):
+    headings = [p for p in paper.text.split("\n\n") if p.startswith("## ")]
+    assert "## III. A FRAMEWORK FOR ANALYZING ADAPTIVE SCALING METHODS" in headings  # two lines, two blocks
+    assert "## B. EXPERIMENTAL SETUP AND ANALYSIS" in headings
+    assert "## ABSTRACT" in headings
+    assert len(headings) == 14
+    # A body sentence that mentions a section is not a heading
+    assert not any("We" in h for h in headings)
+
+
 def test_sample_paper_title_is_complete_and_references_are_split_off(paper):
-    assert paper.text.startswith("ADAPTIVE GRADIENT METHODS FOR DIFFERENTIALLY PRIVATE TINYML IN 6G")
+    assert paper.text.startswith("## ADAPTIVE GRADIENT METHODS FOR DIFFERENTIALLY PRIVATE TINYML IN 6G")
     assert paper.references.startswith("[1]")
     assert "Deep leakage from gradients" not in paper.text
     assert "--- REFERENCES ---" in paper.full_text()

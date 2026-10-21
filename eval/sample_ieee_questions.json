@@ -32,6 +32,7 @@
     {"id": "q28", "question": "How could privacy budgets be used by a traffic scheduling application?", "evidence": ["traffic scheduling xApp"]},
     {"id": "q29", "question": "Which method handles small gradients by suppressing them, and what is its key limitation?", "evidence": ["May excessively dampen important signals"]},
     {"id": "q30", "question": "What future theory do the authors call for?", "evidence": ["unified convergence theory"]},
+    {"id": "q31", "question": "What values of epsilon and delta were used for the privacy budget?", "evidence": ["δ = 10^(-5)"]},
 
     {"id": "u01", "question": "What is a good recipe for chocolate cake?", "evidence": []},
     {"id": "u02", "question": "Who won the 2022 FIFA World Cup?", "evidence": []},
